@@ -1,0 +1,137 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+
+-- ==============================================================================
+-- [CONFIG] PASTE YOUR RAW SCRIPT LINK BELOW FOR AUTO-LOAD TO WORK
+-- Upload this full code to a Gist/Pastebin/GitHub, get the "Raw" link, and paste it here.
+local SCRIPT_URL = "PUT_YOUR_RAW_URL_HERE" 
+-- Example: "https://raw.githubusercontent.com/username/repo/main/script.lua"
+-- ==============================================================================
+
+-- 1. SAFE PATH LOADING
+local zones = Workspace:WaitForChild("World"):WaitForChild("Zones")
+local winterLevel = zones:WaitForChild("Level_WinterWonderland")
+local giftFolder = winterLevel:WaitForChild("Gift_Collectible")
+
+-- Configuration
+local WAIT_TIME = 0.25      -- Time to wait between collections
+local VOID_LIMIT = -243     -- Skips presents below this Y height
+local HEIGHT_OFFSET = 3     -- Hovers 3 studs above
+
+-- Helper Function: Keeps the player floating
+local function enableFloat(rootPart)
+    if not rootPart:FindFirstChild("AntiFallVelocity") then
+        local bodyVel = Instance.new("BodyVelocity")
+        bodyVel.Name = "AntiFallVelocity"
+        bodyVel.Velocity = Vector3.zero
+        bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bodyVel.Parent = rootPart
+    end
+end
+
+-- Helper Function: Safely finds where to teleport
+local function getTargetCFrame(obj)
+    if obj:IsA("BasePart") then
+        return obj.CFrame
+    elseif obj:IsA("Model") then
+        if obj.PrimaryPart then return obj.PrimaryPart.CFrame end
+        local firstPart = obj:FindFirstChildWhichIsA("BasePart")
+        if firstPart then return firstPart.CFrame end
+        local pivot = obj:GetPivot()
+        if pivot then return pivot end
+    end
+    return nil
+end
+
+-- Server Hop Function
+local function ServerHop()
+    print(">> Attempting to Server Hop...")
+    
+    -- 1. Queue the script to run again in the next server
+    local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport)
+    if queue_on_teleport and SCRIPT_URL ~= "PUT_YOUR_RAW_URL_HERE" then
+        queue_on_teleport([[
+            repeat task.wait() until game:IsLoaded()
+            loadstring(game:HttpGet("]] .. SCRIPT_URL .. [["))()
+        ]])
+        print(">> Script queued for next server.")
+    elseif SCRIPT_URL == "PUT_YOUR_RAW_URL_HERE" then
+        warn(">> WARNING: No SCRIPT_URL provided. Script will NOT reload after teleport!")
+    end
+
+    -- 2. Find a suitable server (excluding current one)
+    local PlaceID = game.PlaceId
+    local servers = {}
+    local req = request or http_request or (http and http.request) or (syn and syn.request)
+    
+    if req then
+        -- Fetch server list
+        local body = req({Url = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100", PlaceID)}).Body
+        local data = HttpService:JSONDecode(body)
+        
+        if data and data.data then
+            for _, server in ipairs(data.data) do
+                -- Filter: Must not be current server, must have space, must be playing
+                if tostring(server.id) ~= tostring(game.JobId) and server.playing < server.maxPlayers then
+                    table.insert(servers, server.id)
+                end
+            end
+        end
+    end
+
+    -- 3. Teleport
+    if #servers > 0 then
+        local randomServer = servers[math.random(1, #servers)]
+        TeleportService:TeleportToPlaceInstance(PlaceID, randomServer, player)
+    else
+        -- Fallback: Standard teleport if API fails
+        print(">> API check failed, using standard teleport...")
+        TeleportService:Teleport(PlaceID, player)
+    end
+end
+
+local function teleportToGifts()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local rootPart = character:WaitForChild("HumanoidRootPart")
+    enableFloat(rootPart)
+
+    local gifts = giftFolder:GetChildren()
+    print(">> Found " .. #gifts .. " gifts. Starting collection...")
+
+    -- If no gifts exist, skip straight to hopping
+    if #gifts == 0 then
+        return
+    end
+
+    for _, gift in ipairs(gifts) do
+        if not character or not rootPart or not rootPart.Parent then
+            character = player.Character or player.CharacterAdded:Wait()
+            rootPart = character:WaitForChild("HumanoidRootPart")
+            enableFloat(rootPart)
+        end
+
+        local targetCFrame = getTargetCFrame(gift)
+        if targetCFrame then
+            local presentHeight = targetCFrame.Position.Y
+            if presentHeight > VOID_LIMIT then
+                local safePosition = targetCFrame * CFrame.new(0, HEIGHT_OFFSET, 0)
+                rootPart.CFrame = safePosition
+                rootPart.AssemblyLinearVelocity = Vector3.zero 
+                rootPart.AssemblyAngularVelocity = Vector3.zero
+                task.wait(WAIT_TIME)
+            end
+        end
+    end
+end
+
+-- MAIN EXECUTION
+-- 1. Run the farm once
+teleportToGifts()
+
+-- 2. Once finished, Hop immediately
+print(">> Farm cycle complete. Hopping now...")
+ServerHop()
